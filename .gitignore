@@ -1,0 +1,12 @@
+# Ignore the virtual environment
+venv/
+.venv/
+
+# Ignore local databases and user data
+therapy_db/
+data/
+
+# Ignore OS-specific cache artifacts
+.DS_Store
+__pycache__/
+*.pyc
