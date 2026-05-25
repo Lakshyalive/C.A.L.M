@@ -4,11 +4,9 @@ RAG Therapy AI with Kokoro Voice
 Run: python3 therapy_voice.py
 """
 
-import sys
+import random
 import time
-import subprocess
 import numpy as np
-import soundfile as sf
 import ollama
 import threading
 import queue
@@ -17,13 +15,17 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from kokoro import KPipeline
 from scripts.voice_input import listen
-
-# Add scripts to path
-sys.path.insert(0, "./scripts")
-from prompt_builder import (
+from scripts.prompt_builder import (
     build_system_prompt,
     format_retrieved_docs,
     check_for_crisis
+)
+from scripts.web_server import (
+    start_ui_server,
+    send_to_ui,
+    set_welcome_messages,
+    interrupt_event,
+    stop_listening_event,
 )
 
 # ═══════════════════════════════════════════════════════════
@@ -38,60 +40,53 @@ SPEED       = 0.92           # Slightly slower = calming
 TOP_K       = 4              # Number of book passages to retrieve per query
 
 # ═══════════════════════════════════════════════════════════
-# INITIALIZATION
+# VARIED OPENING GREETINGS
+# One is chosen at random each session so it never feels scripted.
 # ═══════════════════════════════════════════════════════════
 
-def initialize():
-    """Load all models and databases. Runs once at startup."""
+OPENINGS = [
+    (
+        "Hello. I'm really glad you're here. "
+        "This is your space — no judgment, no rush. "
+        "What's on your mind today?"
+    ),
+    (
+        "Hi. However you're feeling right now, that's exactly where we'll start. "
+        "I'm here to listen. "
+        "What would you like to talk about?"
+    ),
+    (
+        "Hello. Sometimes just showing up is the hardest part, "
+        "and you've already done that. "
+        "What's been weighing on you lately?"
+    ),
+    (
+        "Hi there. I'm Samantha, and I'm here to listen — really listen. "
+        "There's no right or wrong thing to say. "
+        "What's on your heart today?"
+    ),
+    (
+        "Welcome. I'm glad you took this step. "
+        "Say whatever feels true — this is your space. "
+        "How are you really doing?"
+    ),
+    (
+        "Hello. Take a breath — you're safe here. "
+        "We'll go at whatever pace feels right. "
+        "Where would you like to begin?"
+    ),
+    (
+        "Hi. It takes courage to reach out, and I don't take that lightly. "
+        "I'm here with you. "
+        "What's been going on?"
+    ),
+]
 
-    print("\n" + "="*55)
-    print("  THERAPY AI — Initializing")
-    print("="*55)
-
-    print("\n[1/3] Loading knowledge base...")
-    embeddings  = OllamaEmbeddings(model=EMBED_MODEL)
-    vectorstore = Chroma(
-        persist_directory  = DB_DIR,
-        embedding_function = embeddings,
-        collection_name    = "therapy_knowledge"
-    )
-    collection_size = vectorstore._collection.count()
-    print(f"      Loaded {collection_size} passages from 5 books")
-
-    print("[2/3] Loading voice model (Kokoro)...")
-    tts = KPipeline(lang_code='en-us')
-    print("      Voice model ready")
-
-    print("[3/3] Verifying LLM connection...")
-    test = ollama.chat(
-        model    = LLM_MODEL,
-        messages = [{"role": "user", "content": "Say OK"}]
-    )
-    print(f"      LLM ready: {LLM_MODEL}")
-
-    print("\n  All systems ready.\n")
-    return vectorstore, tts
-
-# ═══════════════════════════════════════════════════════════
-# RETRIEVAL
-# ═══════════════════════════════════════════════════════════
-
-def retrieve(vectorstore, query, k=TOP_K):
-    """Semantic search over the therapy knowledge base."""
-    results = vectorstore.similarity_search_with_score(query, k=k)
-    return results
-
-# ═══════════════════════════════════════════════════════════
-# STREAMING PIPELINE
-# ═══════════════════════════════════════════════════════════
-
-
-SENTENCE_ENDS = {'.', '!', '?', '…'}
 
 def synthesize_sentence(tts, sentence):
-    """Convert one sentence to audio array."""
+    """Convert one sentence to audio array (public, used by the pipeline)."""
     sentence = sentence.strip()
-    if not sentence or len(sentence) < 3:
+    if not sentence or len(sentence) < 2:
         return None
     chunks = []
     try:
@@ -104,8 +99,71 @@ def synthesize_sentence(tts, sentence):
         print(f"\n  [TTS error: {e}]")
     return None
 
+
+
+# ═══════════════════════════════════════════════════════════
+# INITIALIZATION
+# ═══════════════════════════════════════════════════════════
+
+def initialize():
+    """Load all models and databases. Runs once at startup."""
+
+    print("\n" + "="*55)
+    print("  THERAPY AI — Initializing")
+    print("="*55)
+
+    print("\n[1/5] Loading knowledge base...")
+    embeddings  = OllamaEmbeddings(model=EMBED_MODEL)
+    vectorstore = Chroma(
+        persist_directory  = DB_DIR,
+        embedding_function = embeddings,
+        collection_name    = "therapy_knowledge"
+    )
+    collection_size = vectorstore._collection.count()
+    print(f"      Loaded {collection_size} passages from 5 books")
+
+    print("[2/5] Loading voice model (Kokoro)...")
+    tts = KPipeline(lang_code='en-us')
+    print("      Voice model ready")
+
+    print("[3/5] Verifying LLM connection...")
+    ollama.chat(
+        model    = LLM_MODEL,
+        messages = [{"role": "user", "content": "Say OK"}]
+    )
+    print(f"      LLM ready: {LLM_MODEL}")
+
+    print("[4/5] Starting UI Server...")
+    start_ui_server()
+
+    print("\n  All systems ready.\n")
+    return vectorstore, tts
+
+# ═══════════════════════════════════════════════════════════
+# RETRIEVAL
+# ═══════════════════════════════════════════════════════════
+
+def retrieve(vectorstore, query, k=TOP_K):
+    """Semantic search over the therapy knowledge base."""
+    return vectorstore.similarity_search_with_score(query, k=k)
+
+# ═══════════════════════════════════════════════════════════
+# STREAMING PIPELINE
+# ═══════════════════════════════════════════════════════════
+
+SENTENCE_ENDS = {'.', '!', '?', '…'}
+
+
+
+
 def speak(tts, text):
-    """Single-shot TTS for short non-RAG responses."""
+    """
+    Single-shot TTS for short non-RAG responses (opening, farewell, crisis).
+    Polls interrupt_event every 30 ms so the user can interrupt at any time.
+    After completion, calls sd.stop() + waits 0.25 s so macOS CoreAudio fully
+    releases the 24000 Hz output device before listen() opens the 16000 Hz
+    InputStream (prevents PaErrorCode -9986 / AUHAL -10851).
+    """
     import sounddevice as sd
     audio = synthesize_sentence(tts, text)
     if audio is not None:
@@ -114,21 +172,38 @@ def speak(tts, text):
         if peak > 0.01:
             audio = (audio / peak) * 0.88
 
-        # Add tail silence so last word doesn't get cut
-        tail    = np.zeros(int(24000 * 0.3), dtype=np.float32)
-        audio   = np.concatenate([audio, tail])
+        # Tail silence so the last word isn't clipped
+        tail  = np.zeros(int(24000 * 0.3), dtype=np.float32)
+        audio = np.concatenate([audio, tail])
 
         sd.play(audio, samplerate=24000)
+
+        # Wait for playback to finish, bail on interrupt
+        duration = len(audio) / 24000.0
+        t0 = time.time()
+        while time.time() - t0 < duration:
+            if interrupt_event.is_set():
+                sd.stop()
+                time.sleep(0.25)   # Let CoreAudio release the device
+                return
+            time.sleep(0.03)
         sd.wait()
+        sd.stop()                  # Explicitly release output device
+        time.sleep(0.25)           # Let macOS CoreAudio fully tear down
+
 
 def stream_response_with_voice(vectorstore, user_input, history, tts):
     """
     3-thread pipeline:
-    Thread 1 — streams LLM tokens, detects sentence boundaries, queues text
-    Thread 2 — synthesizes queued sentences into audio arrays
-    Thread 3 — plays audio arrays immediately via sounddevice (no subprocess)
-    No thread ever blocks another.
+      Thread 1 — streams LLM tokens, detects sentence boundaries, queues text
+      Thread 2 — synthesizes queued sentences into audio arrays
+      Thread 3 — plays audio arrays immediately via sounddevice (no subprocess)
+
+    Supports mid-stream interruption via interrupt_event.
     """
+
+    # Clear any leftover interrupt from a previous cycle
+    interrupt_event.clear()
 
     # ── Retrieve context ──────────────────────────────────
     retrieved     = retrieve(vectorstore, user_input)
@@ -152,46 +227,49 @@ def stream_response_with_voice(vectorstore, user_input, history, tts):
     def synthesis_worker():
         while True:
             sentence = synth_queue.get()
-            if sentence is None:          # Sentinel — streaming finished
-                audio_queue.put(None)     # Pass sentinel to playback
+            if sentence is None or interrupt_event.is_set():
+                audio_queue.put(None)
                 break
             audio = synthesize_sentence(tts, sentence)
-            if audio is not None:
+            if audio is not None and not interrupt_event.is_set():
                 audio_queue.put(audio)
 
     # ── Thread 3: Playback ────────────────────────────────
     def playback_worker():
         import sounddevice as sd
 
-        # Open ONE persistent stream for the entire response
-        # Writing to it is continuous — no gaps between sentences
         stream = sd.OutputStream(
             samplerate = 24000,
             channels   = 1,
             dtype      = "float32",
-            blocksize  = 4096,     # Larger block = smoother, less CPU overhead
+            blocksize  = 4096,
         )
         stream.start()
 
         while True:
             audio_data = audio_queue.get()
-            if audio_data is None:
+            if audio_data is None or interrupt_event.is_set():
                 break
 
-            # Normalize — prevents crackling
             audio_data = np.array(audio_data, dtype=np.float32)
             peak = np.max(np.abs(audio_data))
             if peak > 0.01:
                 audio_data = (audio_data / peak) * 0.88
 
-            # Write directly into running stream — instant, no process startup
             stream.write(audio_data.reshape(-1, 1))
 
-        # Drain remaining buffer before closing
-        silence = np.zeros((int(24000 * 0.35), 1), dtype=np.float32)
-        stream.write(silence)
+        # Short silence drain so audio doesn't click on close
+        stream.write(np.zeros((int(24000 * 0.15), 1), dtype=np.float32))
         stream.stop()
         stream.close()
+        # Let macOS CoreAudio fully release the 24000 Hz device before
+        # the next listen() cycle opens a 16000 Hz InputStream.
+        import sounddevice as _sd
+        try:
+            _sd.stop()
+        except Exception:
+            pass
+        time.sleep(0.25)
 
     # Start background threads
     synth_thread = threading.Thread(target=synthesis_worker, daemon=True)
@@ -204,40 +282,48 @@ def stream_response_with_voice(vectorstore, user_input, history, tts):
     full_response    = []
 
     print("\nSamantha: ", end="", flush=True)
+    send_to_ui({"type": "state", "value": "speaking"})
 
-    stream = ollama.chat(
-        model    = LLM_MODEL,
-        messages = messages,
-        stream   = True,
-        options  = {
-            "temperature":    0.72,
-            "top_p":          0.9,
-            "repeat_penalty": 1.1,
-            "num_predict":    250,
-        }
-    )
+    try:
+        llm_stream = ollama.chat(
+            model    = LLM_MODEL,
+            messages = messages,
+            stream   = True,
+            options  = {
+                "temperature":    0.72,
+                "top_p":          0.9,
+                "repeat_penalty": 1.1,
+                "num_predict":    250,
+            }
+        )
 
-    for chunk in stream:
-        token = chunk['message']['content']
-        print(token, end="", flush=True)
-        full_response.append(token)
-        current_sentence += token
+        for chunk in llm_stream:
+            if interrupt_event.is_set():
+                break
 
-        # Sentence boundary detected — queue text instantly, never block
-        if current_sentence.rstrip() and current_sentence.rstrip()[-1] in SENTENCE_ENDS:
+            token = chunk['message']['content']
+            print(token, end="", flush=True)
+            full_response.append(token)
+            current_sentence += token
+
+            send_to_ui({"type": "stream", "role": "samantha", "token": token})
+
+            # Sentence boundary detected — queue for TTS immediately
+            if current_sentence.rstrip() and current_sentence.rstrip()[-1] in SENTENCE_ENDS:
+                synth_queue.put(current_sentence.strip())
+                current_sentence = ""
+
+        # Queue any remaining text after stream ends (or after interrupt)
+        if current_sentence.strip() and not interrupt_event.is_set():
             synth_queue.put(current_sentence.strip())
-            current_sentence = ""
 
-    # Queue any remaining text after stream ends
-    if current_sentence.strip():
-        synth_queue.put(current_sentence.strip())
+        print("\n")
 
-    print("\n")
-
-    # ── Shutdown pipeline ─────────────────────────────────
-    synth_queue.put(None)     # Tell synthesis thread to stop
-    synth_thread.join()       # Wait for all synthesis to finish
-    play_thread.join()        # Wait for all audio to finish playing
+    finally:
+        # ── Shutdown pipeline ─────────────────────────────────
+        synth_queue.put(None)   # Tell synthesis thread to stop
+        synth_thread.join()     # Wait for synthesis to finish
+        play_thread.join()      # Wait for audio to finish playing
 
     # ── Save to history ───────────────────────────────────
     full_text = "".join(full_response)
@@ -267,39 +353,52 @@ def print_welcome():
     print("  THERAPY AI")
     print("  Knowledge: Rogers | Burns | Frankl | Brown | van der Kolk")
     print("="*55)
-    print("  Commands:")
-    print("  'sources' — show which book passages were retrieved")
-    print("  'clear'   — start a fresh conversation")
-    print("  'quit'    — exit")
+    print("  'clear'  — start a fresh conversation")
+    print("  'quit'   — exit")
     print("  Crisis Resources: iCall India — 9152987821")
     print("="*55 + "\n")
 
 
 def main():
     vectorstore, tts = initialize()
-    history          = []
-    last_sources     = []
-    last_context     = ""
+    history      = []
 
     print_welcome()
 
-    opening = (
-        "Hello. I'm really glad you're here. "
-        "This is a safe space — there's no judgment, only listening. "
-        "What's been on your mind lately?"
-    )
+    # Pick a random opening so it never sounds scripted
+    opening = random.choice(OPENINGS)
     print(f"Samantha: {opening}\n")
+
+    # Send the opening immediately — messages are buffered until the browser
+    # connects, so there's no race condition regardless of connection timing.
+    send_to_ui({"type": "state", "value": "speaking"})
+    send_to_ui({"type": "transcript", "role": "samantha", "text": opening})
     speak(tts, opening)
+    send_to_ui({"type": "state", "value": "idle"})
+
+    # Store the opening so page refreshes and late connections still see it.
+    set_welcome_messages([
+        {"type": "transcript", "role": "samantha", "text": opening},
+        {"type": "state", "value": "idle"},
+    ])
 
     while True:
+        # Clear all events from the previous cycle
+        interrupt_event.clear()
+        stop_listening_event.clear()
+
         try:
-            user_input = listen()
+            send_to_ui({"type": "state", "value": "listening"})
+
+            user_input = listen(stop_event=stop_listening_event)
 
             if not user_input:
                 print("  [Didn't catch that — try speaking again]\n")
+                send_to_ui({"type": "state", "value": "idle"})
                 continue
 
             print(f"\nYou: {user_input}")
+            send_to_ui({"type": "transcript", "role": "user", "text": user_input})
             lower = user_input.lower().strip()
 
             if any(word in lower for word in ["quit", "exit", "goodbye", "bye"]):
@@ -308,6 +407,8 @@ def main():
                     "Reaching out is always a sign of strength. Goodbye."
                 )
                 print(f"\nSamantha: {farewell}\n")
+                send_to_ui({"type": "state", "value": "speaking"})
+                send_to_ui({"type": "transcript", "role": "samantha", "text": farewell})
                 speak(tts, farewell)
                 break
 
@@ -316,31 +417,32 @@ def main():
                 print("\n[Conversation cleared]\n")
                 ack = "Of course. Let's start fresh. What's on your mind?"
                 print(f"Samantha: {ack}\n")
+                send_to_ui({"type": "state", "value": "speaking"})
+                send_to_ui({"type": "transcript", "role": "samantha", "text": ack})
                 speak(tts, ack)
-                continue
-
-            if "show sources" in lower or "what sources" in lower:
-                if last_sources:
-                    print(f"\n[Retrieved from: {' | '.join(last_sources)}]\n")
-                else:
-                    print("\n[No sources yet]\n")
+                send_to_ui({"type": "state", "value": "idle"})
                 continue
 
             if check_for_crisis(user_input):
                 print(f"\nSamantha: {CRISIS_RESPONSE}\n")
+                send_to_ui({"type": "state", "value": "speaking"})
+                send_to_ui({"type": "transcript", "role": "samantha", "text": CRISIS_RESPONSE})
                 speak(tts, CRISIS_RESPONSE)
+                send_to_ui({"type": "state", "value": "idle"})
                 continue
 
             print("  Searching knowledge base...\n")
             start = time.time()
+            send_to_ui({"type": "state", "value": "thinking"})
 
             reply, sources, context = stream_response_with_voice(
                 vectorstore, user_input, history, tts
             )
 
-            elapsed      = time.time() - start
-            last_sources = sources
-            last_context = context
+            # Samantha's reply is already streamed token-by-token via 'stream' messages.
+            send_to_ui({"type": "state", "value": "idle"})
+
+            elapsed = time.time() - start
 
             if sources:
                 print(f"  [Sources: {' | '.join(set(sources))}]")
@@ -353,8 +455,7 @@ def main():
         except Exception as e:
             print(f"\n[Error: {e}]")
             print("Try speaking again.\n")
-
-
+            send_to_ui({"type": "state", "value": "idle"})
 
 if __name__ == "__main__":
     main()
