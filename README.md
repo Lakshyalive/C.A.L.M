@@ -439,7 +439,12 @@ pip install -r requirements.txt
 
 ## Resume Description
 
-> Architected **C.A.L.M.** (Context-Aware Language Memory), a fully local RAG therapy companion grounded in a 5-book psychology corpus (Rogers, Burns, Frankl, Brown, van der Kolk); implemented semantic chunking with `nomic-embed-text` embeddings into a ChromaDB vector store with framework-tagged metadata for framework-aware retrieval; built a 3-thread streaming pipeline (LLM token stream → Kokoro-82M TTS synthesis → `sounddevice` OutputStream) for gapless voice output; integrated faster-Whisper local STT with rolling-RMS VAD; deployed a FastAPI + WebSocket server for a real-time browser UI with an animated state orb — all running offline on Apple Silicon at zero cost.
+```markdown
+**C.A.L.M. — Context-Aware Language Memory** 
+*Python, LangChain, ChromaDB, FastAPI, Ollama, Kokoro, Faster-Whisper*
+– Built a fully local RAG-based voice assistant over 1,000+ psychology corpus chunks using LangChain and ChromaDB, improving response factual consistency through citation-grounded retrieval.
+– Designed a concurrent 3-thread speech pipeline that reduced time-to-speech latency to ~1.5s using streaming sentence-level TTS; implemented real-time WebSocket interruption handling for responsive interaction.
+```
 
 ---
 
