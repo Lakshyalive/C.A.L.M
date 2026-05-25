@@ -58,7 +58,7 @@ Your Voice (Microphone)
 │           INFERENCE ENGINE                    │
 │                                               │
 │  Dynamic system prompt (context injected)     │
-│  Llama 3.2 3B  ←  Ollama  ←  Apple Metal     │
+│  Llama 3.2 3B  ←  Ollama  ←  Apple Metal      │
 │  Streaming token output                       │
 └────────────────────┬──────────────────────────┘
                      │  streaming tokens
