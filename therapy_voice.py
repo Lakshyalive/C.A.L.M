@@ -205,6 +205,9 @@ def stream_response_with_voice(vectorstore, user_input, history, tts):
     # Clear any leftover interrupt from a previous cycle
     interrupt_event.clear()
 
+    # Start timing for Time-to-Speech latency
+    pipeline_start = time.time()
+
     # ── Retrieve context ──────────────────────────────────
     retrieved     = retrieve(vectorstore, user_input)
     context       = format_retrieved_docs(retrieved)
@@ -246,10 +249,16 @@ def stream_response_with_voice(vectorstore, user_input, history, tts):
         )
         stream.start()
 
+        first_chunk_played = False
         while True:
             audio_data = audio_queue.get()
             if audio_data is None or interrupt_event.is_set():
                 break
+
+            if not first_chunk_played:
+                first_chunk_played = True
+                tts_latency = time.time() - pipeline_start
+                print(f"\n  [Time-to-Speech Latency: {tts_latency:.2f}s]")
 
             audio_data = np.array(audio_data, dtype=np.float32)
             peak = np.max(np.abs(audio_data))

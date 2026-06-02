@@ -1,478 +1,514 @@
-# C.A.L.M.
-### Context-Aware Language Memory
+# C.A.L.M. — Context-Aware Language Memory
 
-> A fully local, offline-first AI therapy companion grounded in five foundational works of modern psychology — with real-time voice interaction, semantic retrieval, and zero cloud dependency.
+C.A.L.M. is a local, low-latency voice-to-voice system designed to run on resource-constrained hardware without any cloud dependencies. The system implements a Retrieval-Augmented Generation (RAG) pipeline over a corpus of clinical psychology literature to guide conversational responses. Speech-to-text, semantic retrieval, large language model inference, text-to-speech, and audio playback are executed entirely on-device.
 
----
-
-## What Is C.A.L.M.?
-
-C.A.L.M. is a Retrieval-Augmented Generation (RAG) system that transforms five clinical psychology books into a living knowledge base. When you speak, it retrieves the most relevant passages from Rogers, Burns, Frankl, Brown, or van der Kolk — then uses a local LLM to respond with genuine therapeutic grounding, not generic chatbot output.
-
-Everything runs on your machine. No API keys. No data leaves your device.
+No API keys are required. No data leaves the machine at runtime.
 
 ---
 
 ## Demo
 
-> *Coming soon — demo video link here*
+> Demo video: [Watch on LinkedIn / YouTube](#)
+> *(Update the link above once the video is published. The raw video file is available in `media/therapy_rag_demo.mp4`.)*
 
-```
-You:      "I feel like no matter how hard I try, nothing ever changes."
+### Database Build — Knowledge Ingestion Output
 
-[Sources: RESILIENCE — Brené Brown | CBT — David Burns]
+![Database ingestion results showing 7,379 chunks indexed across 5 psychology books](media/database_results.png)
 
-Samantha: "That sense of running in place, despite giving everything you have —
-           that's one of the most exhausting feelings there is, and I want you
-           to know it makes complete sense that you'd feel that way.
-           What does 'trying' look like for you right now?"
-```
+### Baseline Blocking Latency — Sequential Pipeline Benchmark
 
----
+![Baseline sequential pipeline benchmark result showing 12.48 seconds total latency](media/baseline_result.jpeg)
 
-## Architecture
+### Optimized Latency — 3-Thread Pipeline Profiler
 
-```
-Your Voice (Microphone)
-        │
-        ▼
-┌───────────────────┐
-│  faster-whisper   │  Speech → Text  (local, int8 quantized)
-│  "small" model    │
-└────────┬──────────┘
-         │  transcribed text
-         ▼
-┌───────────────────────────────────────────────┐
-│              RAG RETRIEVAL ENGINE             │
-│                                               │
-│  nomic-embed-text  →  ChromaDB Vector Store   │
-│  (Ollama, local)       (5 books, ~1000 chunks)│
-│                                               │
-│   HUMANISTIC   CBT   EXISTENTIAL              │
-│   RESILIENCE   TRAUMA                         │
-│         ↓ Top-K relevant passages             │
-└────────────────────┬──────────────────────────┘
-                     │  retrieved context
-                     ▼
-┌───────────────────────────────────────────────┐
-│           INFERENCE ENGINE                    │
-│                                               │
-│  Dynamic system prompt (context injected)     │
-│  Llama 3.2 3B  ←  Ollama  ←  Apple Metal      │
-│  Streaming token output                       │
-└────────────────────┬──────────────────────────┘
-                     │  streaming tokens
-         ┌───────────┴──────────────┐
-         ▼                          ▼
-  ┌─────────────┐          ┌──────────────────┐
-  │  Terminal   │          │   Web UI         │
-  │  (live      │          │   FastAPI +      │
-  │   stream)   │          │   WebSocket      │
-  └─────────────┘          └──────────────────┘
-         │
-         ▼
-┌───────────────────────────────────────────────┐
-│           3-THREAD VOICE PIPELINE             │
-│                                               │
-│  Thread 1: Detect sentence boundaries         │
-│  Thread 2: Kokoro-82M TTS synthesis           │
-│  Thread 3: sounddevice OutputStream           │
-│            (gapless, persistent stream)       │
-└───────────────────────────────────────────────┘
-         │
-         ▼
-  You hear Samantha speak
-```
+![Component latency profiler output showing 4.35 second total time-to-speech on warm pipeline](media/pipeline_result.png)
 
 ---
 
-## Knowledge Base
 
-Five frameworks. One cohesive companion.
+## System Architecture
 
-| Framework | Book | Author | What It Teaches Samantha |
-|-----------|------|--------|--------------------------|
-| `HUMANISTIC` | On Becoming a Person | Carl Rogers | Unconditional positive regard, empathy, reflective listening |
-| `CBT` | Feeling Good: The New Mood Therapy | David D. Burns | Cognitive distortions, thought records, structured reframing |
-| `EXISTENTIAL` | Man's Search for Meaning | Viktor Frankl | Meaning-making, purpose, resilience through suffering |
-| `RESILIENCE` | The Gifts of Imperfection | Brené Brown | Shame resilience, vulnerability, self-worth, belonging |
-| `TRAUMA` | The Body Keeps the Score | Bessel van der Kolk | Trauma-informed care, somatic awareness, grounding |
+The diagram below represents the runtime architecture, data flow, and concurrent execution boundaries.
 
-Retrieval is framework-aware. A question about shame surfaces Brown. A question about intrusive memories surfaces van der Kolk. The system routes to what actually fits.
+```
+[ Microphone Input ]
+         |
+         v
++-------------------+
+|  faster-whisper   |  Local Speech-to-Text (int8 quantized, small model)
++--------+----------+
+         |
+         v  Transcribed Query String
++-------------------------------------------------------+
+|               RAG Retrieval Engine                    |
+|                                                       |
+|  nomic-embed-text -> ChromaDB Vector Index            |
+|  Scans 7,379 chunks, returns top-4 text passages      |
++--------+----------------------------------------------+
+         |
+         v  Retrieved Context
++-------------------------------------------------------+
+|                   Inference Engine                    |
+|                                                       |
+|  Dynamic prompt assembly with context injection       |
+|  Llama 3.2 3B via Ollama (Metal GPU Acceleration)     |
++--------+----------------------------------------------+
+         |
+         v  Token Stream
++-------------------------------------------------------+
+|            3-Thread Concurrency Pipeline              |
+|                                                       |
+|  Thread 1 (Main): Parse stream for sentence boundary  |
+|              |                                        |
+|              v  enqueue sentence                      |
+|  Thread 2: Synthesize audio buffer via Kokoro-82M    |
+|              |                                        |
+|              v  enqueue audio array                   |
+|  Thread 3: Write array to sounddevice OutputStream   |
++--------+----------------------------------------------+
+         |
+         v  Continuous Audio Waveform
+[ Audio Output Stream ]
+```
+
+The 3-thread pipeline allows Thread 2 to synthesize sentence N+1 while Thread 3 is playing sentence N, eliminating inter-sentence audio gaps and dramatically reducing the user-perceived response delay.
+
+---
+
+## Performance Telemetry
+
+All metrics below are ground-truth measurements captured on the reference hardware using the profiling utilities included in this repository. Numbers vary slightly across runs due to OS scheduling, model cache state, and thermal throttling.
+
+### Reference Hardware
+
+| Attribute | Value |
+|---|---|
+| Machine | MacBook Air (M1, 2020) |
+| RAM | 8 GB Unified Memory |
+| Storage | SSD (NVMe) |
+| OS | macOS 14 Sonoma |
+| Python | 3.11 |
+
+### Model Footprint
+
+| Model | Delivery | Disk Size |
+|---|---|---|
+| Llama 3.2 3B | Ollama (4-bit quantization) | 2.0 GB |
+| nomic-embed-text | Ollama | 274 MB |
+| Kokoro-82M | PyPI (ONNX) | ~82 MB |
+| faster-whisper small | PyPI (int8) | ~244 MB |
+
+### Database Ingestion
+
+| Metric | Value |
+|---|---|
+| Input corpus | 5 PDF files |
+| Total indexed chunks | 7,379 passages |
+| Chunk size | 600 characters |
+| Chunk overlap | 80 characters |
+| Database on disk | 71 MB (ChromaDB SQLite backend) |
+| Database build time | 261 seconds (~4 minutes 21 seconds) |
+
+Chunk breakdown by psychological framework:
+
+| Framework | Chunks |
+|---|---|
+| HUMANISTIC (Rogers) | 1,792 |
+| CBT (Burns) | 1,722 |
+| EXISTENTIAL (Frankl) | 1,297 |
+| TRAUMA (van der Kolk) | 2,095 |
+| RESILIENCE (Brown) | 473 |
+
+### Latency Comparison
+
+The baseline pipeline runs sequentially: full retrieval, then full LLM generation, then full TTS synthesis. The optimized pipeline overlaps all three using the 3-thread architecture described above.
+
+| Pipeline Stage | Sequential Baseline | 3-Thread Optimized |
+|---|---|---|
+| Vector search retrieval | 2.20s | 0.24s |
+| LLM time-to-first-sentence | 4.46s | 2.44s |
+| TTS first sentence synthesis | 5.82s | 1.68s |
+| **Total time-to-speech latency** | **12.48s** | **4.35s** |
+
+The optimized pipeline achieves a 65% reduction in time-to-speech latency compared to sequential execution. Latency profile breakdown when warm:
+
+```
+  Chroma Retrieval:    0.24s  ( 5.4%)
+  LLM First Sentence:  2.44s  (56.1%)
+  TTS Synthesis:       1.68s  (38.5%)
+  ----------------------------------------
+  TOTAL TTS LATENCY:   4.35 seconds
+```
+
+To reproduce these measurements, see `scripts/diagnose_latency.py` and `scripts/test_blocking_latency.py`.
+
+---
+
+## Concurrency and Systems Engineering
+
+### Multi-Threaded Audio Pipeline
+
+A sequential voice pipeline blocks audio playback until the entire response is generated and synthesized, which on this hardware produces a 12.48-second wait. C.A.L.M. resolves this by spawning three parallel workers linked via Python `queue.Queue` objects:
+
+**Thread 1 — Token Stream Listener (Main Thread)**
+Reads tokens from the Ollama server-sent events stream and appends them to a buffer. When a sentence-ending punctuation character (`.`, `!`, `?`, `…`) is detected at the end of the buffer, the complete sentence is pushed onto `synth_queue` and the buffer is cleared.
+
+**Thread 2 — TTS Synthesis Worker**
+Blocks on `synth_queue`. For every dequeued sentence string, runs ONNX inference using the Kokoro-82M voice model, producing a raw `numpy.float32` audio array. The array is pushed to `audio_queue`.
+
+**Thread 3 — Audio Playback Worker**
+Blocks on `audio_queue`. Writes each audio array directly into a persistent, already-open `sounddevice.OutputStream` running at 24,000 Hz. The stream is opened once and kept alive for the entire response, eliminating the ~80–100ms latency gap that subprocess-based players introduce between sentences.
+
+### Socket-Level Interruption Handling
+
+During active playback, the user can click the status orb in the Web UI to interrupt the assistant. When the FastAPI WebSocket server receives an interrupt signal, the following sequence executes:
+
+1. A shared `threading.Event` flag (`interrupt_event`) is set.
+2. Thread 1 breaks out of the token stream loop, halting further LLM token consumption.
+3. Thread 2 drains `synth_queue` without processing further sentences.
+4. Thread 3 calls `sounddevice.stop()` to immediately flush the hardware audio buffer.
+5. The application returns to the listening state.
+
+This design keeps the interruption path entirely in-process and does not require subprocess signals or OS-level kill calls.
+
+### macOS CoreAudio PortAudio Conflict Resolution
+
+During development, transitioning from audio playback (24,000 Hz output stream) to microphone recording (16,000 Hz input stream) produced the following runtime crash:
+
+```
+sounddevice.PortAudioError: Internal PortAudio error [PaErrorCode -9986]
+```
+
+This crash is caused by a resource conflict in macOS CoreAudio (AUHAL). When the output stream finishes, macOS requires a brief period to destroy the hardware unit's 24,000 Hz context before a new 16,000 Hz input context can be allocated. Attempting to open the input stream immediately causes PortAudio to fail with code `-9986`.
+
+The solution involves the following:
+
+1. `stream.stop()` and `stream.close()` are called explicitly on the output stream when a response completes or is interrupted.
+2. The playback thread sleeps for exactly `0.25 seconds` after closing, yielding control to the CoreAudio HAL to complete device teardown.
+3. The microphone input stream is opened inside a retry wrapper. If initialization fails, the wrapper waits `0.1 seconds` and retries up to 3 times before propagating an error.
+
+---
+
+## Ingested Knowledge Base
+
+Retrieval is framework-aware. The system routes queries to the most relevant psychological methodologies automatically. A query about intrusive memories retrieves van der Kolk passages. A query about shame retrieves Brown passages. A query about hopelessness may retrieve both Burns and Frankl.
+
+| Framework Label | Source Text | Author | Methodology |
+|---|---|---|---|
+| HUMANISTIC | On Becoming a Person | Carl Rogers | Client-centered empathy, reflective listening, unconditional positive regard |
+| CBT | Feeling Good: The New Mood Therapy | David D. Burns | Cognitive distortions identification, thought records, behavioral activation |
+| EXISTENTIAL | Man's Search for Meaning | Viktor Frankl | Logotherapy, meaning-making under suffering, existential purpose |
+| RESILIENCE | The Gifts of Imperfection | Brene Brown | Shame resilience, vulnerability validation, self-worth, belonging |
+| TRAUMA | The Body Keeps the Score | Bessel van der Kolk | Somatic regulation, nervous system grounding, trauma-informed care |
 
 ---
 
 ## Technical Stack
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **LLM** | Llama 3.2 3B via Ollama | Local inference, Apple Metal acceleration |
-| **Embeddings** | nomic-embed-text via Ollama | Semantic chunk encoding |
-| **Vector Database** | ChromaDB | Local persistent similarity search |
-| **RAG Framework** | LangChain | Document loading, chunking, retrieval |
-| **PDF Processing** | PyMuPDF | Book ingestion and text extraction |
-| **Speech-to-Text** | faster-whisper (small, int8) | Local microphone transcription |
-| **Text-to-Speech** | Kokoro-82M | Natural voice synthesis, fully offline |
-| **Audio I/O** | sounddevice | Mic capture + gapless OutputStream playback |
-| **Web UI** | FastAPI + WebSockets | Real-time browser interface with orb states |
-| **Platform** | macOS (Apple Silicon) | M1/M2/M3 optimised, 8GB+ RAM |
+| Layer | Technology | Version | Purpose |
+|---|---|---|---|
+| LLM | Llama 3.2 3B via Ollama | 3B parameters | Local inference, Apple Metal acceleration |
+| Embeddings | nomic-embed-text via Ollama | — | Semantic chunk vectorization |
+| Vector Database | ChromaDB | 1.5.9 | Local persistent similarity search |
+| RAG Framework | LangChain | 1.3.1 | Document chunking, retrieval abstraction |
+| PDF Processing | PyMuPDF | 1.27.2 | Text extraction and layout parsing |
+| Speech-to-Text | faster-whisper | 1.2.1 | Local microphone transcription (int8) |
+| Text-to-Speech | Kokoro-82M | 0.9.4 | Neural voice synthesis (ONNX, fully offline) |
+| Audio I/O | sounddevice | 0.5.5 | Microphone capture and gapless OutputStream playback |
+| Web UI Server | FastAPI + WebSockets | 0.136.1 | Real-time browser interface with state synchronization |
+| Platform | macOS (Apple Silicon) | M1/M2/M3 | Optimized for Unified Memory architecture |
 
 ---
 
-## Repository Structure
+## Directory Structure
 
 ```
 C.A.L.M/
-│
-├── therapy_voice.py          # Main application entry point
-│
-├── scripts/
-│   ├── build_database.py     # One-time PDF → ChromaDB ingestion
-│   ├── prompt_builder.py     # Dynamic system prompt construction
-│   ├── voice_input.py        # Whisper STT + silence-detection VAD
-│   ├── web_server.py         # FastAPI + WebSocket UI bridge
-│   ├── test_mic.py           # Microphone level diagnostic
-│   └── test_retrieval.py     # Vector DB retrieval diagnostic
-│
-├── static/
-│   └── index.html            # Web UI (animated orb + chat interface)
-│
-├── books/                    # Place your 5 PDFs here (not committed)
-│   ├── rogers.pdf
-│   ├── burns_cbt.pdf
-│   ├── frankl.pdf
-│   ├── brown.pdf
-│   └── van_der_kolk.pdf
-│
-├── therapy_db/               # ChromaDB vector store (auto-generated)
-├── data/                     # Optional: conversation logs
-├── requirements.txt
-└── README.md
+|
++-- therapy_voice.py              Main application entry point and orchestration
+|
++-- requirements.txt              Pinned dependency manifest
+|
++-- scripts/
+|   +-- build_database.py         PDF ingestion, chunking, embedding, ChromaDB write
+|   +-- prompt_builder.py         Clinical prompt templates and crisis guardrail logic
+|   +-- voice_input.py            Voice Activity Detection (VAD) and Whisper STT module
+|   +-- web_server.py             FastAPI server and WebSocket state synchronization
+|   |
+|   +-- test_mic.py               Microphone diagnostic (RMS level and threshold check)
+|   +-- test_retrieval.py         Semantic retrieval verification across framework types
+|   +-- test_blocking_latency.py  Sequential baseline latency benchmark
+|   +-- diagnose_latency.py       Component-by-component latency profiler
+|
++-- static/
+|   +-- index.html                Web UI with animated orb and live chat stream
+|
++-- books/                        PDF source directory (not committed to git)
+|
++-- therapy_db/                   ChromaDB sqlite3 vector index (auto-generated)
 ```
 
 ---
 
-## Setup
+## Installation
 
 ### Prerequisites
 
-- macOS with Apple Silicon (M1 / M2 / M3)
-- Python 3.11+
-- [Ollama](https://ollama.com) installed
-- 5 PDF books placed in the `books/` folder (see Knowledge Base table above)
-- ~5 GB free disk space (models + database)
+- Apple Silicon Mac (M1, M2, or M3)
+- Python 3.11 or later
+- Ollama installed and running on the host
+- Approximately 6 GB of free disk space for models and the database
 
----
-
-### 1 — Clone the Repository
+### Step 1 — Clone the Repository
 
 ```bash
 git clone https://github.com/Lakshyalive/C.A.L.M.git
 cd C.A.L.M
 ```
 
----
-
-### 2 — Create Virtual Environment
+### Step 2 — Create Virtual Environment
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
----
-
-### 3 — Install Dependencies
+### Step 3 — Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
-### 4 — Pull Local Models via Ollama
+### Step 4 — Pull Local Models via Ollama
 
 ```bash
-# Start Ollama server (keep this terminal tab open)
+# Start the Ollama server if not already running
 ollama serve
 
-# In a new tab — download the LLM (~2 GB)
+# Download the LLM (2.0 GB)
 ollama pull llama3.2:3b
 
-# Download the embedding model (~270 MB)
+# Download the embedding model (274 MB)
 ollama pull nomic-embed-text
 ```
 
----
+### Step 5 — Prepare PDF Source Files
 
-### 5 — Verify Microphone (Optional but Recommended)
+Place the five PDF files in the `books/` directory using the following exact filenames:
 
-```bash
-python3 scripts/test_mic.py
+```
+books/rogers.pdf
+books/burns_cbt.pdf
+books/frankl.pdf
+books/brown.pdf
+books/van_der_kolk.pdf
 ```
 
-Speak during the 5-second test and confirm bars appear. Note the RMS value when speaking normally — if it reads below `0.020`, lower `SPEECH_THRESHOLD` in `scripts/voice_input.py`.
+### Step 6 — Build the Knowledge Base
 
----
-
-### 6 — Build the Knowledge Base
-
-Run once. Reads all five PDFs, chunks them, embeds each chunk, and saves to ChromaDB locally.
+Run once. This reads all five PDFs, splits them into chunks, generates vector embeddings for each chunk, and writes the complete index to disk as a ChromaDB database.
 
 ```bash
 python3 scripts/build_database.py
 ```
 
-Expected output:
+Expected terminal output:
+
 ```
-Total chunks across all books: ~1000-1200
-  HUMANISTIC:  180 chunks
-  CBT:         240 chunks
-  EXISTENTIAL: 160 chunks
-  RESILIENCE:  190 chunks
-  TRAUMA:      210 chunks
+============================================================
+  THERAPY RAG — Building Knowledge Database
+============================================================
 
-Database built in 340 seconds
+  Loading: On Becoming a Person by Carl Rogers...
+  Done: 1792 chunks created
+  Loading: Feeling Good: The New Mood Therapy by David D. Burns...
+  Done: 1722 chunks created
+  Loading: Man's Search for Meaning by Viktor Frankl...
+  Done: 1297 chunks created
+  Loading: The Gifts of Imperfection by Brene Brown...
+  Done: 473 chunks created
+  Loading: The Body Keeps the Score by Bessel van der Kolk...
+  Done: 2095 chunks created
+
+Total chunks across all books: 7379
+
+Embedding 7379 chunks with nomic-embed-text...
+
+Database built in 261 seconds
+Saved to: ./therapy_db
 ```
 
-This step takes 5–10 minutes. Run it only once. The database persists to `./therapy_db/`.
+This step takes approximately 4–5 minutes. It only needs to run once. The resulting database is saved in `./therapy_db/` and persists across sessions.
 
----
-
-### 7 — Verify Retrieval (Optional)
+### Step 7 — Verify Microphone Input (Recommended)
 
 ```bash
-python3 scripts/test_retrieval.py
+python3 scripts/test_mic.py
 ```
 
-Confirms the correct frameworks surface for different query types (shame → Brené Brown, trauma → van der Kolk).
+Speak during the 5-second test. Confirm the RMS level rises when you speak. If background noise continuously triggers the threshold, increase `SPEECH_THRESHOLD` in `scripts/voice_input.py`.
 
----
-
-### 8 — Run C.A.L.M.
+### Step 8 — Run the Application
 
 ```bash
 python3 therapy_voice.py
 ```
 
-The application will:
-1. Load the knowledge base and all models
-2. Open the web UI in your browser at `http://127.0.0.1:8000`
-3. Speak the opening greeting
-4. Begin listening for your voice
+The application will load all models, open the Web UI at `http://127.0.0.1:8000`, speak the opening greeting, and begin listening.
 
 ---
 
-## How It Works
+## Latency Profiling
 
-Every conversation follows this pipeline:
+Two scripts are included to measure and verify system performance independently of the live application.
 
-```
-1. Listen        →  sounddevice captures microphone
-2. Detect        →  VAD (rolling RMS) detects speech end after 5s silence
-3. Transcribe    →  faster-whisper converts audio to text (local)
-4. Embed query   →  nomic-embed-text encodes the user message
-5. Retrieve      →  ChromaDB returns top-4 relevant passages
-6. Build prompt  →  Retrieved context injected into Samantha's system prompt
-7. Generate      →  Llama 3.2 3B streams response tokens
-8. Synthesize    →  Kokoro-82M converts each sentence to audio (Thread 2)
-9. Play          →  sounddevice OutputStream plays continuously (Thread 3)
-10. Display      →  WebSocket pushes tokens + sources to browser UI
+### Baseline Sequential Latency
+
+Measures the end-to-end time for a blocking (non-concurrent) pipeline: complete retrieval, then full LLM generation, then full TTS synthesis before any audio plays.
+
+```bash
+python3 scripts/test_blocking_latency.py
 ```
 
-The 3-thread voice pipeline (generate → synthesize → play) runs in parallel, so audio starts within ~1.5 seconds of response generation beginning.
-
----
-
-## Voice Pipeline Detail
-
-The audio playback uses a persistent `sounddevice.OutputStream` — one stream stays open for the entire response and sentences are written directly into it as they synthesize. This eliminates the ~80–100ms gap that subprocess-based players introduce between sentences.
+Expected output on reference hardware:
 
 ```
-Token stream  →  sentence boundary detected
-                         │
-              ┌──────────┴──────────┐
-              ▼                     ▼
-        synth_queue           (streaming continues)
-              │
-              ▼
-        Kokoro synthesis
-              │
-              ▼
-        audio_queue
-              │
-              ▼
-        sd.OutputStream.write()   ← no restart, no gap
+  BASELINE BLOCKING TIME-TO-SPEECH: 12.48 seconds
+```
+
+### Optimized Pipeline Component Profiling
+
+Measures each stage of the warm, concurrent pipeline in isolation to establish precise latency attribution.
+
+```bash
+python3 scripts/diagnose_latency.py
+```
+
+Expected output on reference hardware:
+
+```
+  Chroma Retrieval:    0.24s  ( 5.4%)
+  LLM First Sentence:  2.44s  (56.1%)
+  TTS Synthesis:       1.68s  (38.5%)
+  ----------------------------------------
+  TOTAL TTS LATENCY:   4.35 seconds
 ```
 
 ---
 
-## Configuration
-
-All tunable settings are at the top of each file.
+## Configuration Variables
 
 ### `therapy_voice.py`
 
 ```python
-LLM_MODEL   = "llama3.2:3b"    # Ollama model name
+LLM_MODEL   = "llama3.2:3b"   # Ollama model identifier
 EMBED_MODEL = "nomic-embed-text"
-VOICE       = "af_heart"        # af_heart | bf_emma | af_bella
-SPEED       = 0.92              # 1.0 = normal, lower = calmer
-TOP_K       = 4                 # Passages retrieved per query
+DB_DIR      = "./therapy_db"
+VOICE       = "af_heart"      # af_heart | bf_emma | af_bella
+SPEED       = 0.92            # 1.0 = normal speed, lower = calmer delivery
+TOP_K       = 4               # Number of retrieved passages per query
 ```
 
 ### `scripts/voice_input.py`
 
 ```python
-SPEECH_THRESHOLD  = 0.02   # RMS level that counts as speech
-                            # Raise if background noise triggers it
-                            # Lower if mic is quiet
+MIN_SPEECH_SECS   = 3.0    # Minimum recording window in seconds
+SAMPLE_RATE       = 16000  # Microphone input sampling rate
+CHANNELS          = 1      # Mono capture
+SPEECH_THRESHOLD  = 0.02   # RMS level above which audio is classified as speech
+                           # Increase if background noise self-triggers recording
+                           # Decrease if your microphone is quiet
 
-SILENCE_SECONDS   = 5.0    # Seconds of quiet before recording stops
-                            # Raise if speech keeps getting cut off
+SILENCE_SECONDS   = 5.0   # Duration of quiet required to end a user turn
+                           # Increase if speech is being cut off mid-sentence
 
-MIN_SPEECH_SECS   = 3.0    # Minimum recorded duration before stopping
-SMOOTH_WINDOW     = 15     # Rolling average window (750ms at 50ms chunks)
+PRE_SPEECH_TIMEOUT = 10.0 # Maximum wait duration before abandoning a listening cycle
+MAX_DURATION      = 120.0  # Hard cap on a single recording in seconds
 ```
-
----
-
-## Voice Commands
-
-While running, you can say:
-
-| Say | Effect |
-|-----|--------|
-| *"quit"* / *"goodbye"* | Graceful exit with farewell |
-| *"clear"* / *"start over"* | Reset conversation history |
-| *"show sources"* | Print retrieved book passages to terminal |
 
 ---
 
 ## Web UI
 
-When the app starts, it automatically opens `http://127.0.0.1:8000` in your browser.
+When the application starts, a browser tab opens automatically at `http://127.0.0.1:8000`.
 
-Key UI features and layout:
-- **Interface & Typography**: Uses a dark theme utilizing `Inter` (sans-serif) for UI components and `Lora` (serif) for dialogues.
-- **Interactive Button (Orb)**:
-  - **Click to Interrupt**: Clicking the circle at any time during speaking or thinking immediately halts background synthesis and audio playback via `sounddevice`, returning the system to the listening state.
-  - **Manual Done Listening**: Clicking the circle during the active listening phase overrides the silence timeout, halting recording and submitting the captured audio for transcription.
-- **Visual State Colors**:
-  - 🔵 **Blue (Listening)**: Concentric ring animation representing microphone capture.
-  - 🟣 **Purple (Thinking)**: Rotating gradient ring representing document search and LLM response generation.
-  - 🟢 **Green (Speaking)**: Breathing wave representing voice synthesis and active playback.
-  - ⚫ **Dark (Idle)**: Slow pulse representing a silent/inactive pipeline.
-- **Chat Log**: Renders standard dialogue bubbles with live word-by-word streaming of text tokens and badges showing book metadata sources (e.g. `CBT`, `HUMANISTIC`).
-- **Telemetry Indicators**: Displays a connection status pill and an elapsed session time counter.
+### Status Orb States
+
+The central interactive button represents the application's current state:
+
+| Color | State | Description |
+|---|---|---|
+| Blue | Listening | Microphone is active and capturing audio |
+| Purple | Thinking | Vector search and LLM generation in progress |
+| Green | Speaking | Kokoro voice synthesis and audio playback active |
+| Dark | Idle | Pipeline inactive, waiting for next user turn |
+
+Clicking the orb at any time triggers an immediate interrupt: synthesis stops, the audio buffer is flushed, and the application returns to listening.
+
+### Chat Panel
+
+Displays conversation history as formatted dialogue bubbles. Response text is streamed token-by-token via WebSocket as the LLM generates. Each response includes source badges (e.g., `CBT`, `TRAUMA`) indicating which frameworks were retrieved.
 
 ---
 
-## Guardrails
+## Safety Guardrails
 
-Samantha is designed as a supportive companion, not a clinical tool.
+The system is designed to enforce strict operating boundaries.
 
-- **No diagnosis** — never identifies or labels a mental health condition
-- **No medication advice** — never recommends or discusses dosage
-- **Crisis detection** — keyword matching on messages triggers an immediate crisis response with helpline numbers
-- **Anti-interrogation rule** — Samantha validates before asking, never chains follow-up questions
-- **Professional referral** — always encourages professional care for persistent or serious concerns
+- **Crisis Interception:** The prompt builder checks user input against a keyword pattern before passing it to the LLM. If matched, retrieval and LLM generation are bypassed entirely, and the application plays a static crisis response with verified helpline numbers.
+- **No Diagnostic Claims:** The system prompt explicitly prohibits the assistant from labeling or diagnosing mental health conditions.
+- **No Medication Guidance:** The system prompt prohibits recommending or discussing dosage or medications.
+- **Professional Referral:** The system prompt instructs the assistant to encourage professional support for persistent or severe distress.
 
 ### Crisis Resources
 
-| Region | Resource | Contact |
-|--------|----------|---------|
-| India | iCall | 9152987821 |
+| Region | Organization | Contact |
+|---|---|---|
+| India | iCall (TISS) | 9152987821 |
 | India | Vandrevala Foundation | 1860-2662-345 |
-| International | findahelpline.com | — |
 | International | Crisis Text Line | Text HOME to 741741 |
+| International | Find A Helpline | findahelpline.com |
 
 ---
 
 ## Troubleshooting
 
-| Problem | Likely Cause | Fix |
-|---------|-------------|-----|
-| Mic never starts listening | macOS permissions | System Settings → Privacy → Microphone → enable Terminal |
-| Recording cuts off mid-sentence | `SILENCE_SECONDS` too low | Raise to `6.0` in `voice_input.py` |
-| Background noise triggers recording | `SPEECH_THRESHOLD` too low | Raise to `0.030` |
-| Whisper mishears your name | Accent/proper noun | Add name to `initial_prompt` in `transcribe()` |
-| Audio crackles | Values outside ±1.0 | Normalization already applied — check sounddevice version |
-| Headphones not detected | Plugged in after stream opened | Plug in before starting a new response |
-| `ollama: connection refused` | Server not running | Run `ollama serve` in a separate terminal tab |
-| ChromaDB import error | Wrong package | `pip install langchain-chroma --upgrade` |
-| `No module named scripts` | Wrong working directory | Run from `~/C.A.L.M/`, not a subdirectory |
-| Web UI shows "reconnecting" | FastAPI not started | Ensure `web_server.py` imported in `therapy_voice.py` |
+| Symptom | Likely Cause | Resolution |
+|---|---|---|
+| Microphone never activates | macOS permission not granted | System Settings > Privacy & Security > Microphone > enable Terminal |
+| Recording ends mid-sentence | `SILENCE_SECONDS` too low | Increase to `6.0` in `voice_input.py` |
+| Background noise triggers recording | `SPEECH_THRESHOLD` too low | Increase to `0.030` |
+| PortAudio error -9986 at startup | CoreAudio device conflict | Ensure no other application is using the audio device |
+| `ollama: connection refused` | Ollama server not running | Run `ollama serve` in a separate terminal tab |
+| `No module named scripts` | Incorrect working directory | Run from the project root, not a subdirectory |
+| Web UI shows "reconnecting" | FastAPI server not started | Confirm `web_server.py` is imported in `therapy_voice.py` |
+| Whisper transcribes name incorrectly | Accent or proper noun | Add the name to `initial_prompt` in `transcribe()` |
 
 ---
 
-## Requirements
-
-The application runs on standard Python dependencies pinned to stable working versions from the virtual environment:
+## Resume Entry
 
 ```
-ollama==0.6.2
-langchain-ollama==1.1.0
-chromadb==1.5.9
-langchain-chroma==1.1.0
-langchain==1.3.1
-langchain-community==0.4.1
-langchain-text-splitters==1.1.2
-PyMuPDF==1.27.2.3
-faster-whisper==1.2.1
-kokoro==0.9.4
-sounddevice==0.5.5
-soundfile==0.13.1
-numpy==2.4.5
-fastapi==0.136.1
-uvicorn==0.47.0
-python-dotenv==1.2.2
-rich==15.0.0
+C.A.L.M. — Context-Aware Language Memory
+Python, LangChain, ChromaDB, FastAPI, Ollama, Kokoro-82M, faster-whisper
+
+- Architected a fully local RAG voice system indexing a 7,379-passage psychology corpus
+  in ChromaDB, reducing warm vector retrieval latency to 240ms on Apple Silicon hardware.
+- Designed a concurrent 3-thread speech synthesis pipeline using Python thread-safe queues,
+  reducing total time-to-speech latency from 12.48s (sequential) to 4.35s (overlapping).
+- Resolved a macOS CoreAudio hardware unit conflict (PortAudio -9986) caused by immediate
+  audio device context switching by implementing an explicit stream release and retry loop.
 ```
-
-Install all:
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Resume Description
-
-```markdown
-**C.A.L.M. — Context-Aware Language Memory** 
-*Python, LangChain, ChromaDB, FastAPI, Ollama, Kokoro, Faster-Whisper*
-– Built a fully local RAG-based voice assistant over 1,000+ psychology corpus chunks using LangChain and ChromaDB, improving response factual consistency through citation-grounded retrieval.
-– Designed a concurrent 3-thread speech pipeline that reduced time-to-speech latency to ~1.5s using streaming sentence-level TTS; implemented real-time WebSocket interruption handling for responsive interaction.
-```
-
----
-
-## Roadmap
-
-- [ ] Conversation memory across sessions (persistent history)
-- [ ] Improved retrieval scoring with reranking
-- [ ] Exportable session transcripts
-- [ ] Evaluation pipeline — LLM judge measuring framework alignment
-- [ ] Configurable persona (beyond Samantha)
-- [ ] Support for additional book corpora
-- [ ] Push-to-talk mode as alternative to VAD
-- [ ] Mobile-optimised web UI
 
 ---
 
 ## Disclaimer
 
-**C.A.L.M. is not a replacement for professional mental health care.**
-
-It is a portfolio project demonstrating local AI system design, retrieval pipelines, and voice interfaces. If you are experiencing a mental health crisis, please contact a qualified professional or the crisis resources listed above.
+C.A.L.M. is not a replacement for professional mental health support. It is a software portfolio project demonstrating local AI system design, retrieval pipelines, voice interfaces, and concurrent audio processing. If you are experiencing a mental health emergency, please contact a qualified professional or the crisis helplines listed above.
 
 ---
 
 ## Author
 
-**Lakshya Soni**
-[GitHub](https://github.com/Lakshyalive) · [LinkedIn](#) · [Hugging Face](#)
-
-Assistant persona: **Samantha**
-Project: **C.A.L.M. — Context-Aware Language Memory**
+Lakshya Soni
+GitHub: https://github.com/Lakshyalive
