@@ -8,8 +8,12 @@ No API keys are required. No data leaves the machine at runtime.
 
 ## Demo
 
-> Demo video: [Watch on LinkedIn / YouTube](#)
-> *(Update the link above once the video is published. The raw video file is available in `media/therapy_rag_demo.mp4`.)*
+> Demo video:
+
+
+https://github.com/user-attachments/assets/92aaa4b5-2889-49e3-be9e-e1eda00a6fbb
+
+
 
 ### Database Build — Knowledge Ingestion Output
 
